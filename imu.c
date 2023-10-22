@@ -1,21 +1,43 @@
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <termios.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <ctype.h>
 #include <string.h>
+#include <math.h>
 
 #include "imu.h"
 #include "append_buffer.h"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+enum key_mapping
+{
+    CURSOR_LEFT = 1000,
+    CURSOR_RIGHT,
+    CURSOR_UP,
+    CURSOR_DOWN
+};
+
+typedef struct row_buffer
+{
+    int size;
+    char *chars;
+} row_buffer;
+
 struct state
 {
     int cursor_x, cursor_y;
     int screen_columns, screen_rows;
+    int row_count;
+    row_buffer *row;
     struct termios original_termios;
 };
 
@@ -27,25 +49,27 @@ void clear_screen_direct()
     write(STDOUT_FILENO, "\x1b[H", 3); 
 }
 
-void initialize()
+void kill(const char* message)
 {
-    state.cursor_x = 0;
-    state.cursor_y = 0;
-
     clear_screen_direct();
-
-    if (get_window_size(&state.screen_columns, &state.screen_rows) == -1)
-        kill("failed to get window size");
+    
+    perror(message);
+    exit(1);
 }
 
 void clear_rest_of_line(struct append_buffer *ab)
 {
-    append(ab, "\x1b[H", 3);
+    append(ab, "\x1b[K", 3);
 }
 
 void hide_cursor(struct append_buffer *ab)
 {
     append(ab, "\x1b[?25l", 6);
+}
+
+void reset_cursor(struct append_buffer *ab)
+{
+    append(ab, "\x1b[H", 3);
 }
 
 void show_cursor(struct append_buffer *ab)
@@ -64,7 +88,17 @@ void draw_rows(struct append_buffer *ab)
     int y;
     for (y = 0; y < state.screen_rows; y++)
     {
-        append(ab, "~", 1);
+        if (y >= state.row_count)
+        {
+            append(ab, "~", 1);
+        }
+        else
+        {
+            int length = state.row[y].size;
+            if (length > state.screen_columns) length = state.screen_columns;
+            append(ab, state.row[y].chars, length);
+        }
+
         clear_rest_of_line(ab);
 
         if (y < state.screen_rows - 1)
@@ -122,7 +156,7 @@ void refresh_screen()
     struct append_buffer ab = APPEND_BUFFER_INIT;
 
     hide_cursor(&ab);
-    clear_rest_of_line(&ab);
+    reset_cursor(&ab);
 
     draw_rows(&ab);
 
@@ -133,7 +167,7 @@ void refresh_screen()
     free_append_buffer(&ab);
 }
 
-char read_key()
+int read_key()
 {
     int key;
     char c;
@@ -142,31 +176,52 @@ char read_key()
         if (key == -1 && errno != EAGAIN)
             kill("failed to read key");
     }
-    return c;
+
+    if (c == '\x1b') 
+    {
+        char sequence[3];
+        if (read(STDIN_FILENO, &sequence[0], 1) != 1) return '\x1b';
+        if (read(STDIN_FILENO, &sequence[1], 1) != 1) return '\x1b';
+        if (sequence[0] == '[') 
+        {
+            switch (sequence[1]) 
+            {
+                case 'A': return CURSOR_UP;
+                case 'B': return CURSOR_DOWN;
+                case 'C': return CURSOR_RIGHT;
+                case 'D': return CURSOR_LEFT;
+            }
+        }
+        return '\x1b';
+    } 
+    else 
+    {
+        return c;
+    }
 }
 
-void move_cursor(char key)
+void move_cursor(int key)
 {
     switch (key)
     {
-        case 'a':
-            state.cursor_x--;
+        case CURSOR_LEFT:
+            if (state.cursor_x != 0) state.cursor_x--;
             break;
-        case 'd':
-            state.cursor_x++;
+        case CURSOR_RIGHT:
+            if (state.cursor_x != state.screen_columns - 1) state.cursor_x++;
             break;
-        case 'w':
-            state.cursor_y--;
+        case CURSOR_UP:
+            if (state.cursor_y != 0) state.cursor_y--;
             break;
-        case 's':
-            state.cursor_y++;
+        case CURSOR_DOWN:
+            if (state.cursor_y != state.screen_rows - 1) state.cursor_y++;
             break;
     }
 }
 
 void process_user_input()
 {
-    char c = read_key();
+    int c = read_key();
 
     switch (c)
     {
@@ -175,21 +230,19 @@ void process_user_input()
             exit(0);
             break;
         
-        case 'w':
-        case 's':
-        case 'a':
-        case 'd':
+        case CURSOR_UP:
+        case CURSOR_DOWN:
+        case CURSOR_LEFT:
+        case CURSOR_RIGHT:
             move_cursor(c);
             break;
     }
 }
 
-void kill(const char* message)
+void reset_terminal_flags()
 {
-    clear_screen_direct();
-    
-    perror(message);
-    exit(1);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &state.original_termios) == -1)
+        kill("error resetting termios attributes");
 }
 
 void set_terminal_flags()
@@ -210,16 +263,48 @@ void set_terminal_flags()
         kill("error setting termios attributes");
 }
 
-void reset_terminal_flags()
+void append_row(const char *s, size_t length)
 {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &state.original_termios) == -1)
-        kill("error resetting termios attributes");
+    state.row = realloc(state.row, sizeof(row_buffer) * (state.row_count + 1));
+
+    int index = state.row_count;
+    state.row[index].size = length;
+    state.row[index].chars = malloc(length + 1);
+    memcpy(state.row[index].chars, s, length);
+    state.row[index].chars[length] = '\0';
+    state.row_count++;
 }
 
-void open_file(FILE* file, const char* path)
+void open_file(const char *filename)
 {
-    file = fopen(path, "r+");
+    FILE *file_ptr = fopen(filename, "r");
+    if (!file_ptr) kill("failed to open file");
 
-    if (file == NULL)
-        perror("File could not be opened.");
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t length;
+
+    while ((length = getline(&line, &cap, file_ptr)) != -1)
+    {
+        while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r'))
+            length--;
+        append_row(line, length);        
+    }
+    free(line);
+    fclose(file_ptr);
+}
+
+void initialize()
+{
+    set_terminal_flags();
+
+    state.cursor_x = 0;
+    state.cursor_y = 0;
+    state.row_count = 0;
+    state.row = NULL;
+
+    clear_screen_direct();
+
+    if (get_window_size(&state.screen_columns, &state.screen_rows) == -1)
+        kill("failed to get window size");
 }

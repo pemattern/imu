@@ -1,9 +1,13 @@
 #include "imu.h"
-//
+
 int main(int argc, char** argv)
 {
-    set_terminal_flags();
     initialize();
+
+    if (argc >= 2)
+    {
+        open_file(argv[1]);
+    }
 
     while (1)
     {
