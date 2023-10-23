@@ -161,7 +161,7 @@ int get_window_size(int *columns, int *rows)
 void update_cursor_position(struct append_buffer *ab)
 {
     char buffer[32];
-    snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", state.cursor_y + 1, state.cursor_x + 1);
+    snprintf(buffer, sizeof(buffer), "\x1b[%d;%dH", (state.cursor_y - state.row_offset) + 1, state.cursor_x + 1);
     append(ab, buffer, strlen(buffer));
 }
 

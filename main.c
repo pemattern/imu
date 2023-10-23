@@ -12,7 +12,7 @@ int main(int argc, char** argv)
     while (1)
     {
         refresh_screen();
-        process_user_input();//
+        process_user_input();
     }
 
     return 0;
