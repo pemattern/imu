@@ -37,6 +37,7 @@ struct state
     int cursor_x, cursor_y;
     int screen_columns, screen_rows;
     int row_count;
+    int row_offset;
     row_buffer *row;
     struct termios original_termios;
 };
@@ -83,20 +84,33 @@ void clear_screen(struct append_buffer *ab)
     append(ab, "\x1b[H", 3); 
 }
 
+void scroll()
+{
+    if (state.cursor_y < state.row_offset)
+    {
+        state.row_offset = state.cursor_y;
+    }
+    if (state.cursor_y >= state.row_offset + state.screen_rows)
+    {
+        state.row_offset = state.cursor_y - state.screen_rows + 1;
+    }
+}
+
 void draw_rows(struct append_buffer *ab)
 {
     int y;
     for (y = 0; y < state.screen_rows; y++)
     {
-        if (y >= state.row_count)
+        int filerow = y + state.row_offset;
+        if (filerow >= state.row_count)
         {
             append(ab, "~", 1);
         }
         else
         {
-            int length = state.row[y].size;
+            int length = state.row[filerow].size;
             if (length > state.screen_columns) length = state.screen_columns;
-            append(ab, state.row[y].chars, length);
+            append(ab, state.row[filerow].chars, length);
         }
 
         clear_rest_of_line(ab);
@@ -153,6 +167,8 @@ void update_cursor_position(struct append_buffer *ab)
 
 void refresh_screen()
 {
+    scroll();
+
     struct append_buffer ab = APPEND_BUFFER_INIT;
 
     hide_cursor(&ab);
@@ -214,7 +230,7 @@ void move_cursor(int key)
             if (state.cursor_y != 0) state.cursor_y--;
             break;
         case CURSOR_DOWN:
-            if (state.cursor_y != state.screen_rows - 1) state.cursor_y++;
+            if (state.cursor_y != state.row_count) state.cursor_y++;
             break;
     }
 }
@@ -301,6 +317,7 @@ void initialize()
     state.cursor_x = 0;
     state.cursor_y = 0;
     state.row_count = 0;
+    state.row_offset = 0;
     state.row = NULL;
 
     clear_screen_direct();
